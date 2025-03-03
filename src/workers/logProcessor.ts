@@ -1,115 +1,90 @@
 import { Job } from 'bullmq';
-import { supabaseAdmin } from '../config/supabase';
-import fs from 'fs';
-import path from 'path';
-import { promisify } from 'util';
-import https from 'https';
-import { EventEmitter } from 'events';
-import parseLogFile from '../utils/logParser';
+import { getLogQueue } from '../config/queue';
 
-const unlinkAsync = promisify(fs.unlink);
-
-async function downloadFile(url: string, filePath: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    console.log(`📥 Attempting to download from URL: ${url}`);
-    https.get(url, (response) => {
-      if (response.statusCode !== 200) {
-        reject(new Error(`Failed to download: ${response.statusCode}`));
-        return;
-      }
-
-      const fileStream = fs.createWriteStream(filePath);
-      response.pipe(fileStream);
-
-      fileStream.on('finish', () => {
-        fileStream.close();
-        resolve();
-      });
-
-      fileStream.on('error', (err) => {
-        fs.unlink(filePath, () => reject(err));
-      });
-
-      response.on('error', (err) => {
-        fs.unlink(filePath, () => reject(err));
-      });
-    }).on('error', reject);
-  });
+interface LogAnalysisResult {
+  errors: number;
+  keywords?: {
+    error?: number;
+    warning?: number;
+    critical?: number;
+    timeout?: number;
+    exception?: number;
+  };
+  ipAddresses?: Set<string>;
 }
 
-export async function processLogFile(job: Job) {
-  const { fileId, filePath } = job.data;
-  const tempDir = path.join(process.cwd(), 'tmp');
-  const tempFilePath = path.join(tempDir, `download_${fileId}`);
+export async function processLogFile(job: Job, content: string): Promise<LogAnalysisResult> {
+  const queue = await getLogQueue();
+  const result: LogAnalysisResult = {
+    errors: 0,
+    keywords: {
+      error: 0,
+      warning: 0,
+      critical: 0,
+      timeout: 0,
+      exception: 0
+    },
+    ipAddresses: new Set()
+  };
 
   try {
-    // Create tmp directory if it doesn't exist
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
+    // Process the content line by line
+    const lines = content.split('\n');
+    const totalLines = lines.length;
+    let processedLines = 0;
+    const batchSize = Math.max(1, Math.floor(totalLines / 100)); // Update progress every 1%
+
+    // Regular expressions for matching
+    const ipRegex = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
+    const keywordRegex = {
+      error: /\b(?:error|fail(?:ed|ure)?)\b/i,
+      warning: /\bwarn(?:ing)?\b/i,
+      critical: /\bcritical\b/i,
+      timeout: /\btimeout\b/i,
+      exception: /\bexception\b/i
+    };
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      // Extract IP addresses
+      const ips = line.match(ipRegex);
+      if (ips) {
+        ips.forEach(ip => result.ipAddresses!.add(ip));
+      }
+
+      // Count keywords
+      if (keywordRegex.error.test(line)) {
+        result.keywords!.error!++;
+        result.errors++;
+      }
+      if (keywordRegex.warning.test(line)) result.keywords!.warning!++;
+      if (keywordRegex.critical.test(line)) result.keywords!.critical!++;
+      if (keywordRegex.timeout.test(line)) result.keywords!.timeout!++;
+      if (keywordRegex.exception.test(line)) result.keywords!.exception!++;
+
+      // Update progress periodically
+      processedLines++;
+      if (processedLines % batchSize === 0 || processedLines === totalLines) {
+        const progress = Math.min(90, 30 + Math.round((processedLines / totalLines) * 60));
+        await job.updateProgress(progress);
+        
+        // Emit progress event
+        await queue.emit('added', {
+          name: 'processing.log',
+          data: {
+            type: 'info',
+            message: `Processing log entries... (${Math.round((processedLines / totalLines) * 100)}%)`,
+            timestamp: new Date().toISOString(),
+            progress
+          }
+        });
+      }
     }
 
-    console.log(`🔄 Processing job: ${job.id}`);
-    console.log(`📥 Getting signed URL for file: ${fileId}`);
-
-    // Get signed URL for the file
-    const { data: { signedUrl }, error: signedUrlError } = await supabaseAdmin
-      .storage
-      .from('logs')
-      .createSignedUrl(`${fileId}`, 60);
-
-    if (signedUrlError || !signedUrl) {
-      throw new Error(`Failed to get signed URL: ${signedUrlError?.message}`);
-    }
-
-    console.log(`📥 Downloading file: ${fileId}`);
-    await downloadFile(signedUrl, tempFilePath);
-    console.log(`📥 Downloaded file to: ${tempFilePath}`);
-
-    console.log(`📊 Processing file: ${fileId}`);
-    
-    // Create event emitter for progress updates
-    const emitter = new EventEmitter();
-    emitter.on('progress', async (data) => {
-      await job.updateProgress(data);
-    });
-    
-    const stats = await parseLogFile(tempFilePath, emitter);
-    console.log(`📊 Parsed log stats:`, stats);
-
-    // Store results in Supabase
-    console.log('💾 Storing stats in Supabase...');
-    const { data: statsData, error: insertError } = await supabaseAdmin
-      .from('log_stats')
-      .insert({
-        file_id: fileId,
-        error_count: stats.errors || 0,
-        warning_count: stats.keywords.warning || 0,
-        critical_count: stats.keywords.critical || 0,
-        timeout_count: stats.keywords.timeout || 0,
-        exception_count: stats.keywords.exception || 0,
-        unique_ips: Array.from(stats.ipAddresses) || [],
-        processed_at: new Date().toISOString()
-      })
-      .select()
-      .single();
-
-    if (insertError) {
-      console.error('❌ Failed to store stats:', insertError);
-      throw new Error(`Failed to store stats: ${insertError.message}`);
-    }
-    console.log('✅ Stats stored successfully:', statsData);
-
-    // Clean up temp file
-    await unlinkAsync(tempFilePath);
-    console.log(`✅ Successfully processed file: ${fileId}`);
-
-    return stats;
+    return result;
   } catch (error) {
-    console.error(`❌ Error processing file ${fileId}:`, error);
-    // Clean up temp file on error
-    if (fs.existsSync(tempFilePath)) {
-      await unlinkAsync(tempFilePath).catch(console.error);
-    }
+    console.error('Error processing log file:', error);
     throw error;
   }
 }

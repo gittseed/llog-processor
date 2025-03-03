@@ -4,6 +4,7 @@ import path from 'path'
 import { getRedisClient } from '../config/redis'
 import { processLogFile } from './logProcessor'
 import { getLogQueue } from '../config/queue'
+import { supabaseAdmin } from '../config/supabase'
 
 // Load environment variables from the root .env file
 dotenv.config({ path: path.resolve(process.cwd(), '.env') })
@@ -38,6 +39,7 @@ const worker = new Worker('log-processing', async (job) => {
   
   try {
     const queue = await getLogQueue();
+    const { filename, totalChunks, fileSize } = job.data;
     
     // Initial job state
     await job.updateProgress(0);
@@ -51,19 +53,46 @@ const worker = new Worker('log-processing', async (job) => {
       }
     });
     
-    // Getting signed URL
+    // Download and combine chunks
     await job.updateProgress(10);
     await queue.emit('added', {
       name: 'processing.log',
       data: {
         type: 'info',
-        message: '📥 Getting signed URL for file...',
+        message: '📥 Downloading file chunks...',
         timestamp: new Date().toISOString(),
         progress: 10
       }
     });
+
+    let combinedContent = '';
+    for (let i = 0; i < totalChunks; i++) {
+      const chunkProgress = 10 + Math.round((i / totalChunks) * 20); // Progress from 10% to 30%
+      await job.updateProgress(chunkProgress);
+      
+      const { data, error } = await supabaseAdmin.storage
+        .from('logs')
+        .download(`${filename}_part${i}`);
+
+      if (error) {
+        throw new Error(`Error downloading chunk ${i}: ${error.message}`);
+      }
+
+      const chunkText = await data.text();
+      combinedContent += chunkText;
+
+      await queue.emit('added', {
+        name: 'processing.log',
+        data: {
+          type: 'info',
+          message: `📥 Downloaded chunk ${i + 1}/${totalChunks}`,
+          timestamp: new Date().toISOString(),
+          progress: chunkProgress
+        }
+      });
+    }
     
-    // Processing file
+    // Process combined content
     await job.updateProgress(30);
     await queue.emit('added', {
       name: 'processing.log',
@@ -75,19 +104,43 @@ const worker = new Worker('log-processing', async (job) => {
       }
     });
     
-    const result = await processLogFile(job);
+    const result = await processLogFile(job, combinedContent);
     
-    // Storing results
+    // Clean up chunks
     await job.updateProgress(90);
     await queue.emit('added', {
       name: 'processing.log',
       data: {
         type: 'info',
-        message: '💾 Storing results in database...',
+        message: '🧹 Cleaning up temporary files...',
         timestamp: new Date().toISOString(),
         progress: 90
       }
     });
+
+    for (let i = 0; i < totalChunks; i++) {
+      await supabaseAdmin.storage
+        .from('logs')
+        .remove([`${filename}_part${i}`]);
+    }
+    
+    // Store results in database
+    const { error: dbError } = await supabaseAdmin
+      .from('log_stats')
+      .insert({
+        file_id: filename,
+        error_count: result.errors,
+        warning_count: result.keywords?.warning || 0,
+        critical_count: result.keywords?.critical || 0,
+        timeout_count: result.keywords?.timeout || 0,
+        exception_count: result.keywords?.exception || 0,
+        unique_ips: Array.from(result.ipAddresses || []),
+        processed_at: new Date().toISOString()
+      });
+
+    if (dbError) {
+      throw new Error(`Error storing results: ${dbError.message}`);
+    }
     
     // Final success
     await job.updateProgress(100);
@@ -98,32 +151,12 @@ const worker = new Worker('log-processing', async (job) => {
         message: '✅ File processing completed successfully',
         timestamp: new Date().toISOString(),
         progress: 100,
-        details: {
-          errors: result.errors,
-          keywords: {
-            error: result.keywords?.error || 0,
-            warning: result.keywords?.warning || 0,
-            critical: result.keywords?.critical || 0,
-            timeout: result.keywords?.timeout || 0,
-            exception: result.keywords?.exception || 0
-          },
-          ipAddresses: Array.from(result.ipAddresses || [])
-        }
+        details: result
       }
     });
     
     console.log(`✅ Job ${job.id} completed with result:`, result)
-    return {
-      errors: result.errors,
-      keywords: {
-        error: result.keywords?.error || 0,
-        warning: result.keywords?.warning || 0,
-        critical: result.keywords?.critical || 0,
-        timeout: result.keywords?.timeout || 0,
-        exception: result.keywords?.exception || 0
-      },
-      ipAddresses: Array.from(result.ipAddresses || [])
-    };
+    return result;
   } catch (error) {
     console.error(`❌ Job ${job.id} failed:`, error)
     const queue = await getLogQueue();
@@ -139,7 +172,7 @@ const worker = new Worker('log-processing', async (job) => {
   }
 }, {
   connection: getRedisClient(),
-  concurrency: 1,
+  concurrency: 4,
   removeOnComplete: {
     age: 3600,
     count: 1000

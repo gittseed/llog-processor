@@ -1,10 +1,17 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Button, Table, Alert, Space, Upload, message, Row, Col } from 'antd';
+import { Button, Upload, message, Space, Typography, Row, Col, Progress, Table, Alert } from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
-import type { UploadProps } from 'antd';
+import { createClient } from '@supabase/supabase-js';
 import LiveStats from './LiveStats';
+
+const { Title } = Typography;
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
 
 interface LogStats {
   id: number;
@@ -36,29 +43,22 @@ export default function Dashboard() {
     waiting: 0
   });
   const [error, setError] = useState<string>('');
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadStatus, setUploadStatus] = useState('');
 
-  // Fetch initial data and set up polling
   useEffect(() => {
     fetchStats();
-    fetchQueueStatus();
-
-    const statsInterval = setInterval(fetchStats, 2000); // Poll every 2 seconds
-    const queueInterval = setInterval(fetchQueueStatus, 1000); // Poll every second
+    const queueInterval = setInterval(fetchQueueStatus, 2000);
 
     return () => {
-      clearInterval(statsInterval);
       clearInterval(queueInterval);
     };
   }, []);
 
   const fetchStats = async () => {
     try {
-      const response = await fetch('/api/stats', {
-        cache: 'no-store',
-        headers: {
-          'Cache-Control': 'no-cache'
-        }
-      });
+      const response = await fetch('/api/stats');
       if (!response.ok) throw new Error('Failed to fetch stats');
       const data = await response.json();
       setStats(data);
@@ -72,10 +72,7 @@ export default function Dashboard() {
   const fetchQueueStatus = async () => {
     try {
       const response = await fetch('/api/queue-status', {
-        cache: 'no-store',
-        headers: {
-          'Cache-Control': 'no-cache'
-        }
+        cache: 'no-store'
       });
       if (!response.ok) throw new Error('Failed to fetch queue status');
       const data = await response.json();
@@ -85,19 +82,80 @@ export default function Dashboard() {
     }
   };
 
-  const uploadProps: UploadProps = {
-    name: 'file',
-    action: '/api/upload-logs',
-    accept: '.log,.txt',
-    showUploadList: false,
-    onChange(info) {
-      if (info.file.status === 'done') {
-        message.success(`${info.file.name} file uploaded successfully`);
-        fetchQueueStatus();
-      } else if (info.file.status === 'error') {
-        message.error(`${info.file.name} file upload failed.`);
-      }
-    },
+  const handleUpload = async (file: File) => {
+    if (!file) return;
+
+    try {
+      setUploading(true);
+      setUploadProgress(0);
+      setUploadStatus('Preparing upload...');
+
+      // Create FormData
+      const formData = new FormData();
+      formData.append('file', file);
+
+      // Use XMLHttpRequest for upload progress
+      const xhr = new XMLHttpRequest();
+      
+      // Setup promise to handle completion
+      const uploadPromise = new Promise((resolve, reject) => {
+        xhr.upload.addEventListener('progress', (event) => {
+          if (event.lengthComputable) {
+            const progress = Math.round((event.loaded / event.total) * 100);
+            setUploadProgress(progress);
+            setUploadStatus(`Uploading: ${progress}%`);
+          }
+        });
+
+        xhr.addEventListener('load', () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              const response = JSON.parse(xhr.responseText);
+              resolve(response);
+            } catch (e) {
+              reject(new Error('Invalid response format'));
+            }
+          } else {
+            try {
+              const error = JSON.parse(xhr.responseText);
+              reject(new Error(error.error || 'Upload failed'));
+            } catch (e) {
+              reject(new Error(`Upload failed with status ${xhr.status}`));
+            }
+          }
+        });
+
+        xhr.addEventListener('error', () => {
+          reject(new Error('Network error occurred'));
+        });
+
+        xhr.addEventListener('abort', () => {
+          reject(new Error('Upload aborted'));
+        });
+      });
+
+      // Start upload
+      xhr.open('POST', '/api/upload-logs');
+      xhr.send(formData);
+
+      // Wait for completion
+      const result = await uploadPromise;
+      message.success('File uploaded successfully and queued for processing');
+      setUploadStatus('Upload complete!');
+      
+      // Reset after a short delay
+      setTimeout(() => {
+        setUploadProgress(0);
+        setUploadStatus('');
+      }, 2000);
+
+    } catch (error: any) {
+      console.error('Upload error:', error);
+      message.error(`Upload failed: ${error.message}`);
+      setUploadStatus('Upload failed');
+    } finally {
+      setUploading(false);
+    }
   };
 
   const columns = [
@@ -147,9 +205,8 @@ export default function Dashboard() {
       title: 'Unique IPs',
       dataIndex: 'unique_ips',
       key: 'unique_ips',
-      width: 120,
-      render: (ips: string[]) => ips.length,
-      sorter: (a: LogStats, b: LogStats) => a.unique_ips.length - b.unique_ips.length,
+      width: 200,
+      render: (ips: string[]) => ips?.length || 0,
     },
     {
       title: 'Processed At',
@@ -158,59 +215,91 @@ export default function Dashboard() {
       width: 200,
       render: (date: string) => new Date(date).toLocaleString(),
       sorter: (a: LogStats, b: LogStats) => new Date(a.processed_at).getTime() - new Date(b.processed_at).getTime(),
-    }
+    },
   ];
 
   return (
-    <div style={{ padding: '20px' }}>
-      <Space direction="vertical" style={{ width: '100%' }} size="large">
-        {error && <Alert message={error} type="error" showIcon closable />}
+    <div className="p-6">
+      <Row gutter={[16, 16]}>
+        <Col span={24}>
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <Title level={2}>Log File Analysis Dashboard</Title>
+            {error && <Alert message={error} type="error" showIcon />}
+          </Space>
+        </Col>
 
-        <Row gutter={[16, 16]}>
-          <Col span={24}>
-            <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-              <Upload {...uploadProps}>
-                <Button icon={<UploadOutlined />} type="primary">Upload Log File</Button>
-              </Upload>
+        <Col span={24}>
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <Upload.Dragger
+              name="file"
+              multiple={false}
+              showUploadList={false}
+              accept=".log,.txt"
+              beforeUpload={(file) => {
+                handleUpload(file);
+                return false;
+              }}
+              disabled={uploading}
+            >
+              <p className="ant-upload-drag-icon">
+                <UploadOutlined />
+              </p>
+              <p className="ant-upload-text">Click or drag log file to upload</p>
+              {uploadStatus && (
+                <p className="ant-upload-hint" style={{ marginTop: '8px' }}>
+                  {uploadStatus}
+                </p>
+              )}
+            </Upload.Dragger>
 
-              <Space size="large">
-                <Space>
-                  <span>Active:</span>
-                  <span style={{ color: '#1890ff', fontWeight: 'bold' }}>{queueStatus.active}</span>
-                </Space>
-                <Space>
-                  <span>Completed:</span>
-                  <span style={{ color: '#52c41a', fontWeight: 'bold' }}>{queueStatus.completed}</span>
-                </Space>
-                <Space>
-                  <span>Failed:</span>
-                  <span style={{ color: '#f5222d', fontWeight: 'bold' }}>{queueStatus.failed}</span>
-                </Space>
-                <Space>
-                  <span>Waiting:</span>
-                  <span style={{ color: '#faad14', fontWeight: 'bold' }}>{queueStatus.waiting}</span>
-                </Space>
-              </Space>
-            </Space>
-          </Col>
+            {uploading && (
+              <Progress 
+                percent={uploadProgress} 
+                status={uploadProgress === 100 ? "success" : "active"} 
+                strokeColor={{
+                  '0%': '#108ee9',
+                  '100%': '#87d068',
+                }}
+              />
+            )}
+          </Space>
+        </Col>
 
-          <Col span={24}>
-            <LiveStats />
-          </Col>
+        <Col span={24}>
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <Title level={4}>Queue Status</Title>
+            <Row gutter={16}>
+              <Col>
+                <Space>
+                  Active: {queueStatus.active}
+                  Waiting: {queueStatus.waiting}
+                  Completed: {queueStatus.completed}
+                  Failed: {queueStatus.failed}
+                </Space>
+              </Col>
+            </Row>
+          </Space>
+        </Col>
 
-          <Col span={24}>
-            <Table
-              columns={columns}
-              dataSource={stats}
-              rowKey="id"
-              pagination={{ pageSize: 30 }}
-              scroll={{ x: true }}
-              size="middle"
-              bordered
-            />
-          </Col>
-        </Row>
-      </Space>
+        <Col span={24}>
+          <LiveStats />
+        </Col>
+
+        <Col span={24}>
+          <Title level={4}>Processing Results</Title>
+          <Table
+            dataSource={stats}
+            columns={columns}
+            rowKey="id"
+            scroll={{ x: true }}
+            pagination={{
+              defaultPageSize: 10,
+              showSizeChanger: true,
+              showQuickJumper: true,
+            }}
+          />
+        </Col>
+      </Row>
     </div>
   );
 }
