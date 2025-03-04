@@ -1,11 +1,20 @@
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/config/supabase';
+import { rateLimit } from '@/lib/rate-limit';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    // Apply rate limiting
+    const ip = request.headers.get('x-forwarded-for') || 'anonymous';
+    const rateLimitResult = await rateLimit(ip, 'stats');
+    
+    if (!rateLimitResult.success) {
+      return rateLimitResult.response;
+    }
+
     const { data: stats, error } = await supabaseAdmin
       .from('log_stats')
       .select('*')

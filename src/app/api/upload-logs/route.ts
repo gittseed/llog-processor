@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getLogQueue } from '@/config/queue';
 import { supabaseAdmin as supabase } from '@/config/supabase';
+import { rateLimit } from '@/lib/rate-limit';
 
 // Increase body size limit for this route
 export const config = {
@@ -13,12 +14,36 @@ export const config = {
 
 export async function POST(request: Request) {
   try {
+    // Apply rate limiting
+    const ip = request.headers.get('x-forwarded-for') || 'anonymous';
+    const rateLimitResult = await rateLimit(ip, 'upload_logs');
+    
+    if (!rateLimitResult.success) {
+      return rateLimitResult.response;
+    }
+
     const formData = await request.formData();
     const file = formData.get('file') as File;
 
     if (!file) {
       return NextResponse.json(
         { success: false, error: 'No file provided' },
+        { status: 400 }
+      );
+    }
+
+    // Check if file with same name and size exists in the last hour
+    const { data: existingStats } = await supabase
+      .from('log_stats')
+      .select('file_id')
+      .ilike('file_id', `%${file.name}`)
+      .gt('processed_at', new Date(Date.now() - 1).toISOString()) // Last hour
+      .order('processed_at', { ascending: false })
+      .limit(1);
+
+    if (existingStats && existingStats.length > 0) {
+      return NextResponse.json(
+        { success: false, error: 'This file was recently processed. Please wait before uploading it again.' },
         { status: 400 }
       );
     }

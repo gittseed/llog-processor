@@ -7,8 +7,9 @@ export async function GET(request: Request) {
   const code = requestUrl.searchParams.get('code')
 
   if (code) {
-    const cookieStore = cookies()
-    const cookieValues = cookieStore.getAll()
+    const cookieStore = await cookies() // ✅ Await the cookies() function
+    const cookieValues = cookieStore.getAll() // ✅ Now we can call getAll()
+
     const response = NextResponse.redirect(requestUrl.origin)
 
     const supabase = createServerClient(
@@ -36,6 +37,5 @@ export async function GET(request: Request) {
     }
   }
 
-  // Return the user to an error page with instructions
   return NextResponse.redirect(`${requestUrl.origin}/auth-error`)
 }

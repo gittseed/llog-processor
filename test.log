@@ -1,3 +1,0 @@
-[2025-02-20T10:00:00Z] ERROR Database timeout {"userId": 123, "ip": "192.168.1.1"}
-[2025-02-20T10:00:01Z] WARNING High CPU usage {"userId": 124, "ip": "192.168.1.2"}
-[2025-02-20T10:00:02Z] ERROR Connection failed {"userId": 125, "ip": "192.168.1.3"}

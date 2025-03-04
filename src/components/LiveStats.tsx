@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { Alert, Progress, Card, Row, Col, Typography, Tag, Space, Timeline, List } from 'antd';
-import { DatabaseOutlined } from '@ant-design/icons';
+import { Alert, Progress, Card, Row, Col, Typography, Tag, Space, Timeline, List, Button } from 'antd';
+import { DatabaseOutlined, PoweroffOutlined, PlayCircleOutlined } from '@ant-design/icons';
 
 const { Text, Title } = Typography;
 
@@ -34,77 +34,105 @@ export default function LiveStats() {
   const [error, setError] = useState<string | null>(null);
   const [processingLogs, setProcessingLogs] = useState<ProcessingLog[]>([]);
   const [currentProgress, setCurrentProgress] = useState<JobProgress | null>(null);
+  const [isMonitoring, setIsMonitoring] = useState(false);
 
-  useEffect(() => {
-    const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:3001';
-    console.log('🔌 Connecting to socket server at:', SOCKET_URL);
-    
-    const socketInstance = io(SOCKET_URL, {
-      transports: ['websocket'],
-      reconnectionAttempts: 5,
-      reconnectionDelay: 1000,
-    });
-
-    socketInstance.on('connect', () => {
-      console.log('✅ Connected to socket server');
-      setConnected(true);
-      setError(null);
-    });
-
-    socketInstance.on('disconnect', () => {
-      console.log('❌ Disconnected from socket server');
-      setConnected(false);
-      setProcessingLogs(prev => [
-        {
-          type: 'warning',
-          message: 'Disconnected from WebSocket server',
-          timestamp: new Date().toISOString()
-        },
-        ...prev
-      ]);
-    });
-
-    socketInstance.on('connect_error', (err) => {
-      console.error('🚫 Socket connection error:', err);
-      setError(`Connection error: ${err.message}`);
-      setConnected(false);
-    });
-
-    socketInstance.on('processing.log', (data: ProcessingLog) => {
-      console.log('📝 Received processing.log event:', data);
+  const startMonitoring = async () => {
+    try {
+      const response = await fetch('/api/live-stats');
+      if (!response.ok) {
+        throw new Error('Failed to start live stats');
+      }
+      setIsMonitoring(true);
       
-      // Update progress if present
-      if (data.progress !== undefined) {
-        setCurrentProgress(prev => {
-          // Only update if progress is higher or there's no previous progress
-          if (!prev || data.progress! > prev.progress) {
-            return {
-              jobId: data.message.split(' ').pop() || '',
-              progress: data.progress!
-            };
-          }
-          return prev;
-        });
-      }
-
-      // Clear progress on job completion
-      if (data.type === 'success' && data.message.includes('completed successfully')) {
-        setCurrentProgress(null);
-      }
-
-      setProcessingLogs(prev => {
-        const newLogs = [data, ...prev];
-        return newLogs.slice(0, 50); // Keep last 50 logs
+      const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:3001';
+      console.log('🔌 Connecting to socket server at:', SOCKET_URL);
+      
+      const socketInstance = io(SOCKET_URL, {
+        transports: ['websocket'],
+        reconnectionAttempts: 5,
+        reconnectionDelay: 1000,
       });
-    });
 
-    setSocket(socketInstance);
+      socketInstance.on('connect', () => {
+        console.log('✅ Connected to socket server');
+        setConnected(true);
+        setError(null);
+      });
 
+      socketInstance.on('disconnect', () => {
+        console.log('❌ Disconnected from socket server');
+        setConnected(false);
+        setProcessingLogs(prev => [
+          {
+            type: 'warning',
+            message: 'Disconnected from WebSocket server',
+            timestamp: new Date().toISOString()
+          },
+          ...prev
+        ]);
+      });
+
+      socketInstance.on('connect_error', (err) => {
+        console.error('🚫 Socket connection error:', err);
+        setError(`Connection error: ${err.message}`);
+        setConnected(false);
+      });
+
+      socketInstance.on('processing.log', (data: ProcessingLog) => {
+        console.log('📝 Received processing.log event:', data);
+        
+        // Update progress if present
+        if (data.progress !== undefined) {
+          setCurrentProgress(prev => {
+            // Only update if progress is higher or there's no previous progress
+            if (!prev || data.progress! > prev.progress) {
+              return {
+                jobId: data.message.split(' ').pop() || '',
+                progress: data.progress!
+              };
+            }
+            return prev;
+          });
+        }
+
+        // Clear progress on job completion
+        if (data.type === 'success' && data.message.includes('completed successfully')) {
+          setCurrentProgress(null);
+        }
+
+        setProcessingLogs(prev => {
+          const newLogs = [data, ...prev];
+          return newLogs.slice(0, 50); // Keep last 50 logs
+        });
+      });
+
+      setSocket(socketInstance);
+    } catch (error) {
+      console.error('Failed to start monitoring:', error);
+      setError('Failed to start live monitoring');
+    }
+  };
+
+  const stopMonitoring = () => {
+    if (socket) {
+      socket.disconnect();
+      setSocket(null);
+      setConnected(false);
+      setIsMonitoring(false);
+      setProcessingLogs([]);
+      setCurrentProgress(null);
+    }
+  };
+
+  // Cleanup on unmount
+  useEffect(() => {
     return () => {
-      console.log('🧹 Cleaning up socket connection');
-      socketInstance.disconnect();
+      if (socket) {
+        console.log('🧹 Cleaning up socket connection');
+        socket.disconnect();
+      }
     };
-  }, []);
+  }, [socket]);
 
   const renderProcessingLogs = () => {
     return (
@@ -212,28 +240,38 @@ export default function LiveStats() {
 
   return (
     <div style={{ padding: '20px' }}>
-      <Row justify="space-between" align="middle" style={{ marginBottom: '20px' }}>
-        <Col>
-          <Title level={4}>
-            <DatabaseOutlined /> Live Processing Dashboard
-          </Title>
-        </Col>
-        <Col>
-          <Tag color={connected ? 'success' : 'error'}>
-            {connected ? 'Connected' : 'Disconnected'}
-          </Tag>
-        </Col>
-      </Row>
-      {error && (
-        <Alert
-          message="Connection Error"
-          description={error}
-          type="error"
-          showIcon
-          style={{ marginBottom: '20px' }}
-        />
-      )}
-      {renderProcessingLogs()}
+      <Space direction="vertical" style={{ width: '100%' }}>
+        <Space>
+          <Button 
+            type={isMonitoring ? "default" : "primary"}
+            onClick={isMonitoring ? stopMonitoring : startMonitoring}
+            loading={!connected && isMonitoring}
+            icon={isMonitoring ? <PoweroffOutlined /> : <PlayCircleOutlined />}
+          >
+            {isMonitoring ? "Stop Monitoring" : "Start Live Processing"}
+          </Button>
+          {connected && <Tag color="success">Connected</Tag>}
+          {error && <Alert message={error} type="error" showIcon />}
+        </Space>
+
+        {isMonitoring && (
+          <div>
+            <Row justify="space-between" align="middle" style={{ marginBottom: '20px' }}>
+              <Col>
+                <Title level={4}>
+                  <DatabaseOutlined /> Live Processing Dashboard
+                </Title>
+              </Col>
+              <Col>
+                <Tag color={connected ? 'success' : 'error'}>
+                  {connected ? 'Connected' : 'Disconnected'}
+                </Tag>
+              </Col>
+            </Row>
+            {renderProcessingLogs()}
+          </div>
+        )}
+      </Space>
     </div>
   );
 }

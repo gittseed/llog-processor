@@ -43,7 +43,7 @@ const worker = new Worker('log-processing', async (job) => {
     
     // Initial job state
     await job.updateProgress(0);
-    await queue.emit('added', {
+    await queue.emit('waiting', {
       name: 'processing.log',
       data: {
         type: 'info',
@@ -55,7 +55,7 @@ const worker = new Worker('log-processing', async (job) => {
     
     // Download and combine chunks
     await job.updateProgress(10);
-    await queue.emit('added', {
+    await queue.emit('waiting', {
       name: 'processing.log',
       data: {
         type: 'info',
@@ -81,7 +81,7 @@ const worker = new Worker('log-processing', async (job) => {
       const chunkText = await data.text();
       combinedContent += chunkText;
 
-      await queue.emit('added', {
+      await queue.emit('waiting', {
         name: 'processing.log',
         data: {
           type: 'info',
@@ -94,7 +94,7 @@ const worker = new Worker('log-processing', async (job) => {
     
     // Process combined content
     await job.updateProgress(30);
-    await queue.emit('added', {
+    await queue.emit('waiting', {
       name: 'processing.log',
       data: {
         type: 'info',
@@ -108,7 +108,7 @@ const worker = new Worker('log-processing', async (job) => {
     
     // Clean up chunks
     await job.updateProgress(90);
-    await queue.emit('added', {
+    await queue.emit('waiting', {
       name: 'processing.log',
       data: {
         type: 'info',
@@ -144,7 +144,7 @@ const worker = new Worker('log-processing', async (job) => {
     
     // Final success
     await job.updateProgress(100);
-    await queue.emit('added', {
+    await queue.emit('waiting', {
       name: 'processing.log',
       data: {
         type: 'success',
@@ -157,10 +157,10 @@ const worker = new Worker('log-processing', async (job) => {
     
     console.log(`✅ Job ${job.id} completed with result:`, result)
     return result;
-  } catch (error) {
+  } catch (error: any) {
     console.error(`❌ Job ${job.id} failed:`, error)
     const queue = await getLogQueue();
-    await queue.emit('added', {
+    queue.emit('waiting', {
       name: 'processing.log',
       data: {
         type: 'error',
@@ -189,7 +189,7 @@ worker.on('ready', () => {
 worker.on('active', async (job) => {
   console.log(`🏃‍♂️ Started processing job ${job.id}`)
   const queue = await getLogQueue();
-  await queue.emit('added', {
+  await queue.emit('waiting', {
     name: 'processing.log',
     data: {
       type: 'info',
@@ -206,7 +206,7 @@ worker.on('completed', async (job, result) => {
 worker.on('failed', async (job, err) => {
   console.error(`❌ Job ${job?.id} failed:`, err)
   const queue = await getLogQueue();
-  await queue.emit('added', {
+  await queue.emit('waiting', {
     name: 'processing.log',
     data: {
       type: 'error',
@@ -219,7 +219,7 @@ worker.on('failed', async (job, err) => {
 worker.on('error', async (err) => {
   console.error('❌ Worker error:', err)
   const queue = await getLogQueue();
-  await queue.emit('added', {
+  await queue.emit('waiting', {
     name: 'processing.log',
     data: {
       type: 'error',

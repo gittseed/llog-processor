@@ -9,9 +9,5 @@ RUN npm install
 # Copy source
 COPY . .
 
-# Build application
-RUN npm run build
-
-EXPOSE 3000
-
-CMD ["npm", "start"]
+# Expose ports for Next.js and WebSocket
+EXPOSE 3000 3001

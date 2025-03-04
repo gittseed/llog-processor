@@ -26,37 +26,6 @@ export async function getLogQueue() {
     // Enable event subscription
     await logQueue.waitUntilReady();
 
-    // Add event listeners for debugging
-    logQueue.on('waiting', (jobId) => {
-      console.log(' Job waiting:', jobId);
-    });
-
-    logQueue.on('active', (job) => {
-      console.log(' Job active:', job.id);
-    });
-
-    logQueue.on('progress', (job, progress) => {
-      console.log(' Job progress:', job.id, progress);
-    });
-
-    logQueue.on('completed', (job, result) => {
-      console.log(' Job completed:', job.id, result);
-    });
-
-    logQueue.on('failed', (job, error) => {
-      console.error(' Job failed:', job?.id, error);
-    });
-
-    logQueue.on('error', (error) => {
-      console.error(' Queue error:', error);
-    });
-
-    // Listen for custom events
-    logQueue.on('processing.log', (data) => {
-      console.log(' Processing log:', data);
-    });
-
-    console.log(' Queue initialized with event listeners');
   }
   return logQueue;
 }

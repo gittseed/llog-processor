@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist } from "next/font/google";
 import { Toaster } from 'react-hot-toast';
 import "./globals.css";
+import SupabaseProvider from "@/components/providers/SupabaseProvider";
 
 const geist = Geist({
   subsets: ["latin"],
@@ -20,8 +21,10 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={geist.className}>
-        <Toaster position="top-right" />
-        {children}
+        <SupabaseProvider>
+          <Toaster position="top-right" />
+          {children}
+        </SupabaseProvider>
       </body>
     </html>
   );

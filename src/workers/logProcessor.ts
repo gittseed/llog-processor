@@ -70,7 +70,7 @@ export async function processLogFile(job: Job, content: string): Promise<LogAnal
         await job.updateProgress(progress);
         
         // Emit progress event
-        await queue.emit('added', {
+        await queue.emit('waiting', {
           name: 'processing.log',
           data: {
             type: 'info',

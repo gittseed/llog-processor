@@ -31,11 +31,6 @@ export async function middleware(request: NextRequest) {
           return request.cookies.get(name)?.value
         },
         set(name: string, value: string, options: CookieOptions) {
-          request.cookies.set({
-            name,
-            value,
-            ...options,
-          })
           response.cookies.set({
             name,
             value,
@@ -43,11 +38,6 @@ export async function middleware(request: NextRequest) {
           })
         },
         remove(name: string, options: CookieOptions) {
-          request.cookies.set({
-            name,
-            value: '',
-            ...options,
-          })
           response.cookies.set({
             name,
             value: '',
@@ -58,13 +48,26 @@ export async function middleware(request: NextRequest) {
     }
   )
 
-  await supabase.auth.getSession()
+  const { data: { session } } = await supabase.auth.getSession()
+
+  // Check auth status for protected routes
+  const isAuthRoute = request.nextUrl.pathname.startsWith('/auth')
+  const isApiRoute = request.nextUrl.pathname.startsWith('/api')
+  const isPublicRoute = request.nextUrl.pathname === '/' || isAuthRoute
+  
+  if (!session && !isPublicRoute) {
+    return NextResponse.redirect(new URL('/', request.url))
+  }
+
+  if (session && isAuthRoute) {
+    return NextResponse.redirect(new URL('/', request.url))
+  }
 
   return response
 }
 
 export const config = {
   matcher: [
-    '/api/:path*',
+    '/((?!_next/static|_next/image|favicon.ico).*)',
   ],
 }
